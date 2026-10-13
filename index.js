@@ -252,7 +252,8 @@ class Make10Engine {
  */
 const StatsManager = {
     KEY_TOTAL: 'make10_totalCorrect',     // 累計正解数を保存するときの「名前」
-    KEY_TA_BEST: 'make10_timeAttackBest', // タイムアタック自己ベストを保存するときの「名前」
+    KEY_TA_BEST: 'make10_timeAttackBest', // タイムアタック自己ベスト（60秒）を保存するときの「名前」
+    KEY_TA_DURATION: 'make10_taDuration', // ★追加: 最後に選んだタイムアタックの時間を保存するときの「名前」
     KEY_FASTEST: 'make10_fastestTime',    // 最速クリアタイムを保存するときの「名前」
     KEY_BEST_STREAK: 'make10_bestStreak', // 連続正解記録（コンボ）を保存するときの「名前」
 
@@ -262,9 +263,16 @@ const StatsManager = {
         return saved ? parseInt(saved, 10) : 0;
     },
 
+    // ★追加: 時間（秒）ごとに別々の名前で保存する（30秒・1分・2分・3分で記録を分けるため）
+    // 60秒は、これまでの記録がそのまま使えるように、元の名前のままにしている
+    taKey(seconds) {
+        return seconds === 60 ? this.KEY_TA_BEST : `${this.KEY_TA_BEST}_${seconds}`;
+    },
+
     // タイムアタックの自己ベストを読み込む（まだ記録がなければ 0 を返す）
-    getTimeAttackBest() {
-        const saved = localStorage.getItem(this.KEY_TA_BEST);
+    // seconds を省略したら、今選んでいる時間の記録を返す
+    getTimeAttackBest(seconds = GameState.timeAttackDuration) {
+        const saved = localStorage.getItem(this.taKey(seconds));
         return saved ? parseInt(saved, 10) : 0;
     },
 
@@ -289,10 +297,10 @@ const StatsManager = {
 
     // タイムアタックが終わったときに呼び出す。
     // 今回のスコアが自己ベストより高ければ、上書き保存して true を返す
-    updateTimeAttackBest(score) {
-        const best = this.getTimeAttackBest();
+    updateTimeAttackBest(score, seconds = GameState.timeAttackDuration) {
+        const best = this.getTimeAttackBest(seconds);
         if (score > best) {
-            localStorage.setItem(this.KEY_TA_BEST, String(score));
+            localStorage.setItem(this.taKey(seconds), String(score));
             return true;  // 自己ベストを更新した
         }
         return false; // 更新はなかった
@@ -339,6 +347,7 @@ const GameState = {
     score: 0,                 // 今のプレイでの正解数
     timerInterval: null,      // タイムアタックのタイマー（setIntervalのID）
     timeAttackRemaining: 60,  // タイムアタックの残り秒数
+    timeAttackDuration: parseInt(localStorage.getItem('make10_taDuration'), 10) || 60, // ★追加: 選んだ時間（秒）。30 / 60 / 120 / 180 のどれか
     isSolved: false,          // 今の問題が解けた直後かどうか
 
     puzzleStartTime: null,    // ★追加: 今の問題を出題した時刻（最速クリアタイムの計算に使う）
@@ -412,6 +421,19 @@ function setupEventListeners() {
     document.getElementById('btn-undo').addEventListener('click', handleUndo);
     document.getElementById('btn-reset-puzzle').addEventListener('click', handleResetPuzzle); // ★追加
     document.getElementById('btn-skip').addEventListener('click', () => {
+        // ★追加: 対戦モードのパスは、進捗（何問目か）はそのままにして、5秒プラスして問題を入れ替える
+        // （連続正解記録や画面の数字は、対戦では使っていないのでリセットしない）
+        if (GameState.mode === 'battle') {
+            if (GameState.isSolved) return; // 正解した直後は、次の問題への切り替え中なので何もしない
+            sound.playSelect();
+            // ★追加: ペナルティとして5秒プラスする
+            // 「スタートした時刻」を5秒前にずらすと、経過時間が5秒増えて、表示も最終タイムも自動で5秒プラスになる
+            BattleState.turnStartTime -= 5000;
+            updateBattleTimerDisplay(); // 画面の経過時間もすぐに更新する
+            loadBattlePuzzle(); // 新しい問題を出す。進捗の表示も今の状態に合わせて更新される
+            return;
+        }
+
         sound.playSelect();
         GameState.currentStreak = 0; // パスしたら連続正解記録はリセットされる
         elScoreVal.innerText = '0';  // ★追加: 画面に表示されている数字も0に戻す
@@ -424,6 +446,16 @@ function setupEventListeners() {
         sound.playSelect();
         elNextBanner.classList.add('hidden');
         startNewPuzzle();
+    });
+
+    // ★追加: タイムアタックの時間を選ぶボタン（30秒 / 1分 / 2分 / 3分）
+    document.querySelectorAll('.ta-duration-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            sound.playSelect();
+            GameState.timeAttackDuration = parseInt(btn.dataset.seconds, 10);
+            localStorage.setItem(StatsManager.KEY_TA_DURATION, String(GameState.timeAttackDuration)); // 次回も覚えておく
+            updateTaDurationUI();
+        });
     });
 
     // ★追加: タイムアタックの「スタート」ボタン → カウントダウンを開始する
@@ -523,6 +555,8 @@ function switchMode(newMode) {
     // ★追加: 他のモードで変えた表示ラベルを、通常の状態に戻しておく
     elScoreLabel.innerText = '連続正解数:';
     elTimerLabel.innerText = '残り時間:';
+    // ★追加: パスボタンの文字。対戦モードのときだけ「（＋5秒）」を付ける
+    document.getElementById('skip-label').innerText = newMode === 'battle' ? 'パス（＋5秒）' : 'パス';
     elBattlePlayerBadge.classList.add('hidden');
     elBattlePlayerBadge.classList.remove('flex');
     elTaOverlay.classList.add('hidden');
@@ -614,8 +648,25 @@ function runCountdown(numberEl, onDone) {
  *      → 3,2,1のカウントダウン → 60秒タイマー開始
  */
 
+// 秒数を「30秒」「1分」のような表示用の文字にする
+function formatDuration(seconds) {
+    return seconds < 60 ? `${seconds}秒` : `${seconds / 60}分`;
+}
+
+// 時間ボタンの見た目と、説明の文章を、今選んでいる時間に合わせて更新する
+function updateTaDurationUI() {
+    const sec = GameState.timeAttackDuration;
+    const activeClass = "ta-duration-btn px-4 py-2 rounded-xl text-sm font-bold transition-all bg-gradient-to-r from-cyan-500 to-indigo-500 text-white shadow-md";
+    const inactiveClass = "ta-duration-btn px-4 py-2 rounded-xl text-sm font-bold transition-all bg-slate-800/80 text-slate-300 hover:bg-slate-700/80";
+    document.querySelectorAll('.ta-duration-btn').forEach(btn => {
+        btn.className = parseInt(btn.dataset.seconds, 10) === sec ? activeClass : inactiveClass;
+    });
+    document.getElementById('ta-desc').innerText = `${formatDuration(sec)}間でできるだけたくさん「10」を作ろう！`;
+}
+
 // スタート画面（説明とスタートボタン）を表示する
 function showTimeAttackStartScreen() {
+    updateTaDurationUI(); // 選んでいる時間に合わせて表示を更新
     elCardsContainer.innerHTML = ''; // カードはまだ出さない（スタート前なので）
     elTaStartView.classList.remove('hidden');
     elTaCountdownView.classList.add('hidden');
@@ -638,10 +689,10 @@ function startTimeAttackCountdown() {
     });
 }
 
-// タイムアタックの60秒タイマーをスタートする（実際にゲームが始まる部分）
+// タイムアタックのタイマー（選んだ時間）をスタートする（実際にゲームが始まる部分）
 function startTimeAttack() {
-    GameState.timeAttackRemaining = 60;
-    elTimerVal.innerText = '60s';
+    GameState.timeAttackRemaining = GameState.timeAttackDuration;
+    elTimerVal.innerText = `${GameState.timeAttackRemaining}s`;
     startNewPuzzle();
 
     GameState.timerInterval = setInterval(() => {
@@ -651,6 +702,7 @@ function startTimeAttack() {
         if (GameState.timeAttackRemaining <= 0) {
             clearInterval(GameState.timerInterval);
             document.getElementById('final-score').innerText = GameState.score;
+            document.getElementById('final-ta-subtitle').innerText = `${formatDuration(GameState.timeAttackDuration)}間チャレンジ終了！`;
 
             // ★追加: 自己ベストを更新したかチェックして、結果画面にメッセージを出す
             const isNewBest = StatsManager.updateTimeAttackBest(GameState.score);
@@ -927,6 +979,7 @@ function openStatsModal(originButton) {
     sound.playSelect();
     elStatTotalCorrect.innerText = StatsManager.getTotalCorrect();
     elStatTaBest.innerText = StatsManager.getTimeAttackBest();
+    document.getElementById('stat-ta-best-label').innerText = `${formatDuration(GameState.timeAttackDuration)}での最高正解数`;
 
     // ★追加: 最速クリアタイムの表示（まだ記録がなければ「--」と表示する）
     const fastest = StatsManager.getFastestTime();
@@ -1376,7 +1429,7 @@ async function drawShareBase(kind, subtitle) {
  */
 async function drawResultImage(score, best, isNew) {
     showShareMessage('result', ''); // 前のメッセージを消す
-    const { ctx, W } = await drawShareBase('result', 'タイムアタック 60秒');
+    const { ctx, W } = await drawShareBase('result', `タイムアタック ${formatDuration(GameState.timeAttackDuration)}`);
 
     // 正解数（いちばん大きく）
     ctx.fillStyle = '#f8fafc';
@@ -1394,8 +1447,11 @@ async function drawResultImage(score, best, isNew) {
     // 自己ベスト
     ctx.fillStyle = isNew ? '#6ee7b7' : '#94a3b8';
     ctx.font = '800 38px "M PLUS Rounded 1c", sans-serif';
-    ctx.fillText(isNew ? '🎉 自己ベスト更新！' : `自己ベスト ${best}問`, W / 2, 520);
+    ctx.fillText(isNew ? '🎉 自己ベスト更新！' : `自己ベスト ${best}問`, W / 2, 500);
 
+    ctx.fillStyle = '#64748b';
+    ctx.font = '500 24px "M PLUS Rounded 1c", sans-serif';
+    ctx.fillText('数字を合体させて「10」を作ろう！', W / 2, 555);
 
     await cacheShareFile('result');
 }
@@ -1411,7 +1467,7 @@ async function drawStatsImage() {
     // [ラベル, 値, 数字の色]
     const items = [
         ['累計正解数', `${StatsManager.getTotalCorrect()}`, '#38bdf8'],
-        ['タイムアタック自己ベスト', `${StatsManager.getTimeAttackBest()}`, '#6ee7b7'],
+        [`タイムアタック${formatDuration(GameState.timeAttackDuration)}の自己ベスト`, `${StatsManager.getTimeAttackBest()}`, '#6ee7b7'],
         ['最速クリアタイム', fastest !== null ? `${fastest}秒` : '--', '#06b6d4'],
         ['連続正解記録', `${StatsManager.getBestStreak()}`, '#a5b4fc']
     ];
@@ -1428,7 +1484,7 @@ async function drawStatsImage() {
         ctx.stroke();
 
         ctx.fillStyle = '#94a3b8';
-        ctx.font = '700 28px "M PLUS Rounded 1c", sans-serif';
+        ctx.font = '700 26px "M PLUS Rounded 1c", sans-serif';
         ctx.fillText(item[0], cx, top + 45);
         ctx.fillStyle = item[2];
         ctx.font = '900 70px "Outfit", sans-serif';
