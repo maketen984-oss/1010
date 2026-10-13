@@ -453,6 +453,10 @@ function setupEventListeners() {
         icon.className = sound.enabled ? "fas fa-volume-up text-lg text-cyan-400" : "fas fa-volume-mute text-lg text-slate-500";
     });
 
+    // ★追加: シェアボタン（X / LINE / 画像でシェア）
+    buildShareArea('result'); // タイムアップ画面のシェアボタンを作る
+    buildShareArea('stats');  // 記録画面のシェアボタンを作る
+
     // タイムアタックの「もう一度挑戦する」ボタン
     document.getElementById('ta-retry-btn').addEventListener('click', () => {
         toggleModal('modal-gameover', false);
@@ -655,6 +659,9 @@ function startTimeAttack() {
             } else {
                 elFinalBestMessage.innerText = `自己ベスト: ${StatsManager.getTimeAttackBest()}問`;
             }
+
+            // ★追加: シェア用の結果画像を作る
+            drawResultImage(GameState.score, StatsManager.getTimeAttackBest(), isNewBest && GameState.score > 0);
 
             toggleModal('modal-gameover', true, elTimerBox); // ★追加: タイマー表示の位置から出てくるようにする
         }
@@ -928,6 +935,8 @@ function openStatsModal(originButton) {
     // ★追加: 連続正解記録（コンボ）の表示
     elStatBestStreak.innerText = StatsManager.getBestStreak();
 
+    drawStatsImage(); // ★追加: 記録のシェア画像を作る
+
     toggleModal('modal-stats', true, originButton);
 }
 
@@ -1192,4 +1201,250 @@ function toggleModal(id, show, originButton) {
         m.classList.remove('visible', 'opacity-100', 'scale-100');
         m.classList.add('invisible', 'opacity-0', 'scale-0');
     }
+}
+
+
+/* =====================================================
+ * ★追加: SNSシェア機能（シェアするのは画像だけ）
+ *   kind = 'result' → タイムアタックの結果
+ *   kind = 'stats'  → 自分の記録
+ * ===================================================== */
+
+// 作っておいたシェア用の画像ファイルを入れておく場所（描き終わったときに入れる）
+const ShareFiles = { result: null, stats: null };
+
+// スマホ（iPhone / Android / iPad）かどうかを調べる
+function isMobileDevice() {
+    return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent)
+        || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1); // iPadOSの対策
+}
+
+/**
+ * シェアボタン（X / LINE / 保存）を作って表示する
+ * 2か所（結果画面・記録画面）で同じボタンを使うので、1つの関数にまとめている
+ * ボタンの色は、style.css と同じ色（紫・緑・すりガラス）にしている
+ */
+function buildShareArea(kind) {
+    const area = document.getElementById('share-area-' + kind);
+    const btnBase = 'py-2.5 rounded-xl text-white font-bold flex flex-col items-center gap-0.5 transition active:scale-95 ';
+    area.innerHTML = `
+        <div class="text-xs text-slate-400 font-semibold mb-2">この記録を画像でシェアする</div>
+        <div class="grid grid-cols-3 gap-2">
+            <button data-action="x" class="${btnBase}" style="background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%); border: 1px solid #a5b4fc;"><i class="fab fa-x-twitter text-lg"></i><span class="text-xs">X</span></button>
+            <button data-action="line" class="${btnBase}" style="background: linear-gradient(135deg, #10b981 0%, #06b6d4 100%); border: 1px solid #6ee7b7;"><i class="fab fa-line text-lg"></i><span class="text-xs">LINE</span></button>
+            <button data-action="save" class="${btnBase} glass-card hover:bg-white/10"><i class="fas fa-download text-lg"></i><span class="text-xs">保存</span></button>
+        </div>
+        <p id="share-msg-${kind}" class="text-xs text-sky-400 mt-2 min-h-[1rem]"></p>
+    `;
+
+    // 3つのボタンに、それぞれの処理を結びつける
+    area.querySelector('[data-action="x"]').addEventListener('click', () => shareImage(kind, 'x'));
+    area.querySelector('[data-action="line"]').addEventListener('click', () => shareImage(kind, 'line'));
+    area.querySelector('[data-action="save"]').addEventListener('click', () => saveImage(kind));
+}
+
+// ボタンの下にメッセージを出す小さな関数
+function showShareMessage(kind, text) {
+    document.getElementById('share-msg-' + kind).innerText = text;
+}
+
+// canvasの絵を、PNG画像のデータ（Blob）にして返す
+function canvasToBlob(kind) {
+    const canvas = document.getElementById('share-canvas-' + kind);
+    return new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+}
+
+// 画像を保存（ダウンロード）する
+async function saveImage(kind) {
+    const blob = await canvasToBlob(kind);
+    if (!blob) return;
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = kind === 'result' ? 'make10-result.png' : 'make10-record.png';
+    a.click();
+    URL.revokeObjectURL(a.href);
+    showShareMessage(kind, '画像を保存しました');
+}
+
+/**
+ * 画像だけをシェアする（app は 'x' か 'line'）
+ *  - スマホ: シェア画面がすぐに開くので、XまたはLINEのアプリを選び、
+ *            LINEなら送る相手を選ぶだけで、画像がシェアされる（文章やURLは付かない）
+ *  - PC: 画像をクリップボードにコピーして、XまたはLINEを開く
+ *        → 開いた画面で Ctrl+V で貼り付ける
+ *  - コピーできないとき: 画像を保存する
+ * ※ XやLINEはURLだけでは画像を付けられないので、この方法にしている
+ */
+async function shareImage(kind, app) {
+    const file = ShareFiles[kind];
+
+    // (1) スマホ: 画像だけを渡して、シェア画面を開く
+    if (isMobileDevice() && file && navigator.canShare && navigator.canShare({ files: [file] })) {
+        try {
+            await navigator.share({ files: [file] });
+            return;
+        } catch (e) {
+            if (e.name === 'AbortError') return; // 自分でキャンセルしたときは何もしない
+        }
+    }
+
+    // (2) PC: 先にXかLINEを開く
+    // （ボタンを押した直後でないと、新しいタブがブロックされることがあるため）
+    const openUrl = app === 'x'
+        ? 'https://x.com/intent/post'        // Xの投稿画面（文章は空）
+        : 'https://line.me/R/nv/chat';       // LINEのトーク選択画面
+    window.open(openUrl, '_blank', 'noopener');
+
+    // 画像をクリップボードにコピーする（httpsのページかlocalhostでないと使えない）
+    try {
+        await navigator.clipboard.write([new ClipboardItem({ 'image/png': canvasToBlob(kind) })]);
+        showShareMessage(kind, '画像をコピーしました！開いた画面で貼り付け（Ctrl+V）してね');
+    } catch (e) {
+        // (3) コピーできなかったときは、画像を保存する
+        await saveImage(kind);
+        showShareMessage(kind, 'コピーできなかったので画像を保存しました。投稿するときに画像を選んでね');
+    }
+}
+
+// 描き終わった canvas から画像ファイルを作って、ShareFiles に入れておく（スマホのシェアで使う）
+async function cacheShareFile(kind) {
+    const blob = await canvasToBlob(kind);
+    if (blob) ShareFiles[kind] = new File([blob], `make10-${kind}.png`, { type: 'image/png' });
+}
+
+/* ----- ここから下は、シェア画像を canvas に描く部分 ----- */
+/* 色は style.css と同じ色を使っている
+   背景 #090d16 / 水色 #38bdf8 / 緑 #6ee7b7・#06b6d4 / 紫 #a5b4fc / 文字 #f8fafc */
+
+// 背景とカードなど、2つの画像で共通の部分を描く（1200×630は、SNSで見やすい横長サイズ）
+async function drawShareBase(kind, subtitle) {
+    // フォント（Googleフォント）が読み込み終わってから描く。失敗しても続行する
+    try {
+        await Promise.all([
+            document.fonts.load('900 100px "Outfit"'),
+            document.fonts.load('900 40px "M PLUS Rounded 1c"')
+        ]);
+    } catch (e) { /* 読み込めなくても標準フォントで描ける */ }
+
+    const canvas = document.getElementById('share-canvas-' + kind);
+    const ctx = canvas.getContext('2d');
+    const W = canvas.width;   // 1200
+    const H = canvas.height;  // 630
+
+    // 背景（ゲーム画面と同じ、濃い紺色 + 3か所のぼんやりした光）
+    ctx.fillStyle = '#090d16';
+    ctx.fillRect(0, 0, W, H);
+    const glows = [
+        [0, 0, 'rgba(30, 27, 75, 0.7)'],
+        [W, H, 'rgba(15, 23, 42, 0.8)'],
+        [W / 2, H / 2, 'rgba(13, 148, 136, 0.08)']
+    ];
+    glows.forEach(g => {
+        const r = ctx.createRadialGradient(g[0], g[1], 0, g[0], g[1], W * 0.6);
+        r.addColorStop(0, g[2]);
+        r.addColorStop(1, 'rgba(0, 0, 0, 0)');
+        ctx.fillStyle = r;
+        ctx.fillRect(0, 0, W, H);
+    });
+
+    // 中央の大きなカード（すりガラス風パネルと同じ色）
+    ctx.fillStyle = 'rgba(15, 23, 42, 0.65)';
+    roundRect(ctx, 60, 60, W - 120, H - 120, 40);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.12)';
+    ctx.lineWidth = 3;
+    ctx.stroke();
+
+    // タイトルとサブタイトル
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillStyle = '#38bdf8';
+    ctx.font = '900 64px "Outfit", sans-serif';
+    ctx.fillText('MAKE 10', W / 2, 150);
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = '700 32px "M PLUS Rounded 1c", sans-serif';
+    ctx.fillText(subtitle, W / 2, 200);
+
+    return { ctx, W, H };
+}
+
+/**
+ * タイムアタックの結果画像を描く
+ * @param {number} score   今回の正解数
+ * @param {number} best    自己ベスト
+ * @param {boolean} isNew  自己ベストを更新したか
+ */
+async function drawResultImage(score, best, isNew) {
+    showShareMessage('result', ''); // 前のメッセージを消す
+    const { ctx, W } = await drawShareBase('result', 'タイムアタック 60秒');
+
+    // 正解数（いちばん大きく）
+    ctx.fillStyle = '#f8fafc';
+    ctx.font = '900 210px "Outfit", sans-serif';
+    ctx.fillText(String(score), W / 2 - 60, 420);
+
+    // 「問クリア！」は数字の右がわに置く（数字の幅を測ってから位置を決める）
+    const numWidth = ctx.measureText(String(score)).width;
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#6ee7b7';
+    ctx.font = '900 64px "M PLUS Rounded 1c", sans-serif';
+    ctx.fillText('問クリア！', W / 2 - 60 + numWidth / 2 + 20, 420);
+    ctx.textAlign = 'center';
+
+    // 自己ベスト
+    ctx.fillStyle = isNew ? '#6ee7b7' : '#94a3b8';
+    ctx.font = '800 38px "M PLUS Rounded 1c", sans-serif';
+    ctx.fillText(isNew ? '🎉 自己ベスト更新！' : `自己ベスト ${best}問`, W / 2, 520);
+
+
+    await cacheShareFile('result');
+}
+
+/**
+ * 「自分の記録」の画像を描く（4つの記録を2×2で並べる）
+ */
+async function drawStatsImage() {
+    showShareMessage('stats', '');
+    const { ctx } = await drawShareBase('stats', '自分の記録');
+
+    const fastest = StatsManager.getFastestTime();
+    // [ラベル, 値, 数字の色]
+    const items = [
+        ['累計正解数', `${StatsManager.getTotalCorrect()}`, '#38bdf8'],
+        ['タイムアタック自己ベスト', `${StatsManager.getTimeAttackBest()}`, '#6ee7b7'],
+        ['最速クリアタイム', fastest !== null ? `${fastest}秒` : '--', '#06b6d4'],
+        ['連続正解記録', `${StatsManager.getBestStreak()}`, '#a5b4fc']
+    ];
+    items.forEach((item, n) => {
+        const cx = n % 2 === 0 ? 340 : 860;   // 左の列 / 右の列
+        const top = n < 2 ? 250 : 420;        // 上の段 / 下の段
+
+        // 項目ごとの小さな四角（ガラスカードと同じ色）
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.04)';
+        roundRect(ctx, cx - 230, top, 460, 140, 24);
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.08)';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        ctx.fillStyle = '#94a3b8';
+        ctx.font = '700 28px "M PLUS Rounded 1c", sans-serif';
+        ctx.fillText(item[0], cx, top + 45);
+        ctx.fillStyle = item[2];
+        ctx.font = '900 70px "Outfit", sans-serif';
+        ctx.fillText(item[1], cx, top + 118);
+    });
+
+    await cacheShareFile('stats');
+}
+
+// 角が丸い四角形の線を引く道具（canvasには最初から付いていないので自作）
+function roundRect(ctx, x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
 }
