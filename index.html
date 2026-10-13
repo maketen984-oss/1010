@@ -154,7 +154,7 @@
                     </button>
                     <button id="btn-skip" class="px-3 py-2 rounded-xl bg-slate-800/80 hover:bg-slate-700 text-slate-300 border border-slate-700/80 text-sm font-bold flex items-center gap-1.5 transition active:scale-95">
                         <i class="fas fa-forward"></i>
-                        <span>パス</span>
+                        <span id="skip-label">パス</span>
                     </button>
                 </div>
             </div>
@@ -179,8 +179,18 @@
                     <i class="fas fa-stopwatch text-5xl text-amber-300"></i>
                     <div>
                         <div class="text-2xl font-black text-white mb-2">タイムアタック</div>
-                        <p class="text-sm text-slate-300">60秒間でできるだけたくさん「10」を作ろう！</p>
+                        <p id="ta-desc" class="text-sm text-slate-300">60秒間でできるだけたくさん「10」を作ろう！</p>
                         <p class="text-sm text-slate-400 mt-1">スタートを押すと3秒後に始まります</p>
+                    </div>
+                    <!-- ★追加: 時間を選ぶボタン（見た目はJavaScriptが選択中に合わせて更新する） -->
+                    <div>
+                        <div class="text-xs text-slate-400 font-semibold mb-2">時間を選ぼう</div>
+                        <div class="flex gap-2 justify-center">
+                            <button data-seconds="30" class="ta-duration-btn px-4 py-2 rounded-xl text-sm font-bold transition-all bg-slate-800/80 text-slate-300 hover:bg-slate-700/80">30秒</button>
+                            <button data-seconds="60" class="ta-duration-btn px-4 py-2 rounded-xl text-sm font-bold transition-all bg-slate-800/80 text-slate-300 hover:bg-slate-700/80">1分</button>
+                            <button data-seconds="120" class="ta-duration-btn px-4 py-2 rounded-xl text-sm font-bold transition-all bg-slate-800/80 text-slate-300 hover:bg-slate-700/80">2分</button>
+                            <button data-seconds="180" class="ta-duration-btn px-4 py-2 rounded-xl text-sm font-bold transition-all bg-slate-800/80 text-slate-300 hover:bg-slate-700/80">3分</button>
+                        </div>
                     </div>
                     <button id="btn-ta-start" class="px-8 py-3.5 bg-gradient-to-r from-cyan-400 via-indigo-500 to-fuchsia-500 text-white font-black text-base rounded-2xl shadow-xl shadow-indigo-500/30 hover:scale-105 active:scale-95 transition-all flex items-center gap-2 border border-white/20">
                         <i class="fas fa-play"></i>
@@ -334,7 +344,7 @@
 
     <!-- ★追加: 記録（累計正解数・タイムアタック自己ベスト）を見るモーダル -->
     <div id="modal-stats" class="fixed inset-0 bg-slate-950/80 backdrop-blur-md app-modal flex items-center justify-center invisible opacity-0 scale-0 origin-top-right transition-all duration-300 ease-in-out p-4 z-50">
-        <div class="glass-panel rounded-3xl p-6 max-w-sm w-full relative border border-white/20">
+        <div class="glass-panel rounded-3xl p-6 max-w-sm w-full relative border border-white/20 max-h-[90vh] overflow-y-auto">
             <button class="close-modal absolute top-4 right-4 text-slate-400 hover:text-white p-2">
                 <i class="fas fa-xmark text-xl"></i>
             </button>
@@ -352,7 +362,7 @@
                 <div class="bg-slate-900/70 rounded-2xl p-4 border border-slate-800 flex items-center justify-between">
                     <div>
                         <div class="text-sm text-slate-400">タイムアタック 自己ベスト</div>
-                        <div class="text-xs text-slate-500">60秒での最高正解数</div>
+                        <div id="stat-ta-best-label" class="text-xs text-slate-500">60秒での最高正解数</div>
                     </div>
                     <div id="stat-ta-best" class="text-3xl font-black text-amber-300 font-outfit">0</div>
                 </div>
@@ -373,6 +383,10 @@
                     <div id="stat-best-streak" class="text-3xl font-black text-fuchsia-300 font-outfit">0</div>
                 </div>
             </div>
+            <!-- ★追加: 自分の記録のシェア画像とシェアボタン -->
+            <canvas id="share-canvas-stats" width="1200" height="630" class="w-full rounded-xl border border-white/10 mt-4 mb-3"></canvas>
+            <div id="share-area-stats"></div>
+
             <p class="text-xs text-slate-500 mt-4 text-center">この記録はこの端末（ブラウザ）に保存されます</p>
         </div>
     </div>
@@ -381,13 +395,19 @@
     <div id="modal-gameover" class="fixed inset-0 bg-slate-950/85 backdrop-blur-md app-modal flex items-center justify-center invisible opacity-0 scale-0 origin-top-right transition-all duration-300 ease-in-out p-4 z-50">
         <div class="glass-panel rounded-3xl p-6 max-w-sm w-full text-center relative border border-white/20">
             <h3 class="text-2xl font-black text-white mb-2">タイムアップ！</h3>
-            <p class="text-sm text-slate-400 mb-4">60秒間チャレンジ終了！</p>
+            <p id="final-ta-subtitle" class="text-sm text-slate-400 mb-4">60秒間チャレンジ終了！</p>
             <div class="bg-slate-900/80 rounded-2xl p-4 border border-slate-800 mb-3">
                 <div class="text-sm text-slate-400 mb-1">今回の正解数</div>
                 <div id="final-score" class="text-4xl font-black text-cyan-400 font-outfit">0</div>
             </div>
             <!-- ★追加: 自己ベストを更新したかどうかを表示する場所 -->
-            <div id="final-best-message" class="text-sm font-bold text-amber-300 mb-4 min-h-[1rem]"></div>
+            <div id="final-best-message" class="text-sm font-bold text-amber-300 mb-3 min-h-[1rem]"></div>
+
+            <!-- ★追加: シェア用の画像プレビュー（JavaScriptがここに結果画像を描く） -->
+            <canvas id="share-canvas-result" width="1200" height="630" class="w-full rounded-xl border border-white/10 mb-3"></canvas>
+            <!-- ★追加: シェアボタンはJavaScript(buildShareArea)がここに作る -->
+            <div id="share-area-result" class="mb-4"></div>
+
             <button id="ta-retry-btn" class="w-full py-3 bg-gradient-to-r from-cyan-500 to-indigo-500 hover:from-cyan-400 hover:to-indigo-400 text-white font-black rounded-xl transition shadow-lg">
                 もう一度挑戦する
             </button>
