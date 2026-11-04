@@ -25,10 +25,12 @@ class SoundFX {
             const AudioCtx = window.AudioContext || window.webkitAudioContext;
             if (AudioCtx) this.ctx = new AudioCtx();
         }
+        // ★追加: スマホ(iPhoneなど)では、音声コンテキストが「停止中」で始まることがあるので、再開させておく
+        if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume();
     }
 
     // 指定した「音の高さ（freq）」「長さ（duration）」で音を1つ鳴らす関数
-    playTone(freq, duration, type = 'sine', gainVal = 0.08) {
+    playTone(freq, duration, type = 'sine', gainVal = 0.13) {
         if (!this.enabled) return; // OFFなら何もしない
         this.init();
         if (!this.ctx) return;
@@ -47,17 +49,18 @@ class SoundFX {
     }
 
     // それぞれの場面で鳴らす音を、わかりやすい名前の関数にまとめている
-    playSelect() { this.playTone(600, 0.06, 'sine', 0.06); }    // カードを選んだ時
-    playOp() { this.playTone(450, 0.08, 'triangle', 0.08); }    // 演算子を選んだ時
-    playMerge() { this.playTone(850, 0.1, 'sine', 0.1); }       // 数字を計算した時
-    playUndo() { this.playTone(300, 0.08, 'sawtooth', 0.05); }  // 1手戻した時
+    // ★変更: 音の大きさ（最後の数字）を、以前の約1.6倍に大きくした
+    playSelect() { this.playTone(600, 0.06, 'sine', 0.10); }    // カードを選んだ時
+    playOp() { this.playTone(450, 0.08, 'triangle', 0.13); }    // 演算子を選んだ時
+    playMerge() { this.playTone(850, 0.1, 'sine', 0.16); }      // 数字を計算した時
+    playUndo() { this.playTone(300, 0.08, 'sawtooth', 0.08); }  // 1手戻した時
     playSuccess() {                                              // 「10」が完成した時（3音のファンファーレ）
         if (!this.enabled) return;
         this.init();
-        this.playTone(523.25, 0.1, 'sine', 0.1);
-        setTimeout(() => this.playTone(659.25, 0.1, 'sine', 0.1), 80);
-        setTimeout(() => this.playTone(783.99, 0.1, 'sine', 0.1), 160);
-        setTimeout(() => this.playTone(1046.50, 0.3, 'sine', 0.12), 240);
+        this.playTone(523.25, 0.1, 'sine', 0.16);
+        setTimeout(() => this.playTone(659.25, 0.1, 'sine', 0.16), 80);
+        setTimeout(() => this.playTone(783.99, 0.1, 'sine', 0.16), 160);
+        setTimeout(() => this.playTone(1046.50, 0.3, 'sine', 0.19), 240);
     }
 }
 
@@ -149,6 +152,24 @@ const confetti = new ConfettiManager();
  * 4つの数字と四則演算（＋－×÷）を組み合わせて「10」になる問題だけを
  * 出題できるように、あらかじめ答えがある組み合わせだけを集めておく。
  */
+/**
+ * ★追加: むずかしさの設定
+ * ------------------------------------------------------------
+ * 「10」の作り方（解の数）が多いほどかんたん、少ないほどむずかしい、という考え方で分けている。
+ *   かんたん:   0を含まず、作り方が30通り以上ある問題（いろいろな方法で10が作れる）
+ *   ふつう:     作り方が7〜29通りの問題
+ *   むずかしい: 作り方が6通り以下の問題（正解の道すじが少なく、見つけにくい）
+ * p.nums は4つの数字、p.solutions は「10になる式」の一覧
+ */
+const DIFFICULTY_RULES = {
+    easy:   { label: 'かんたん',   test: p => !p.nums.includes(0) && p.solutions.length >= 30 },
+    normal: { label: 'ふつう',     test: p => p.solutions.length >= 7 && p.solutions.length <= 29 },
+    hard:   { label: 'むずかしい', test: p => p.solutions.length <= 6 }
+};
+
+// ★追加: むずかしさの表示名（「ランダム」は、3つのむずかしさをまぜて出題する）
+const DIFFICULTY_LABELS = { easy: 'かんたん', normal: 'ふつう', hard: 'むずかしい', random: 'ランダム' };
+
 class Make10Engine {
     // 2つの数字(x, y)を演算子(op)で計算する、一番基本の計算関数
     static calc(x, op, y) {
@@ -234,10 +255,69 @@ class Make10Engine {
         Make10Engine.pool = pool;
     }
 
+    // ★追加: 今ある数字カードから「10」を作る手順を探す（ヒント用）
+    // 見つかったら [{a, op, b, res}, ...]（1手ずつの計算）の配列を返す。作れないときは null を返す。
+    // すでに10が1枚だけなら、空の配列 [] を返す。
+    // まず「途中でマイナスの数が出ない手順」を探し、なければマイナスも許して探し直す（わかりやすい手順を優先するため）
+    static solveSteps(cards) {
+        const ops = ['+', '-', '*', '/'];
+
+        function search(list, allowNegative) {
+            if (list.length === 1) {
+                return Math.abs(list[0] - 10) < 0.00001 ? [] : null;
+            }
+            // 2枚を選んで計算し、1枚にまとめたものでもう一度探す（これを繰り返す）
+            for (let i = 0; i < list.length; i++) {
+                for (let j = i + 1; j < list.length; j++) {
+                    const rest = list.filter((_, k) => k !== i && k !== j);
+                    const orders = [[list[i], list[j]], [list[j], list[i]]];
+                    for (let o = 0; o < orders.length; o++) {
+                        const x = orders[o][0], y = orders[o][1];
+                        for (const op of ops) {
+                            if (o === 1 && (op === '+' || op === '*')) continue; // 足し算・かけ算は順番を逆にしても同じ
+                            const res = Make10Engine.calc(x, op, y);
+                            if (res === null) continue;
+                            if (!allowNegative && res < 0) continue;
+                            const sub = search(rest.concat([res]), allowNegative);
+                            if (sub) return [{ a: x, op: op, b: y, res: res }].concat(sub);
+                        }
+                    }
+                }
+            }
+            return null;
+        }
+
+        return search(cards, false) || search(cards, true);
+    }
+
+    // ★追加: 1手分の計算を「3 × 4 = 12」のような文字にする
+    static formatStep(step) {
+        const symbol = { '+': '+', '-': '−', '*': '×', '/': '÷' }[step.op];
+        return `${step.a} ${symbol} ${step.b} = ${step.res}`;
+    }
+
     // 問題のストック(pool)からランダムに1問取り出す（数字はシャッフルして返す）
-    static getRandomPuzzle() {
+    // ★変更: むずかしさ(difficulty)に合う問題だけから選ぶようにした
+    static getRandomPuzzle(difficulty = GameState.difficulty) {
         Make10Engine.initPool();
-        const p = Make10Engine.pool[Math.floor(Math.random() * Make10Engine.pool.length)];
+
+        // むずかしさごとの問題リストを、最初の1回だけ作っておく
+        if (!Make10Engine.subPools) {
+            Make10Engine.subPools = {};
+            Object.keys(DIFFICULTY_RULES).forEach(key => {
+                Make10Engine.subPools[key] = Make10Engine.pool.filter(DIFFICULTY_RULES[key].test);
+            });
+        }
+        // 「ランダム」のときは、まず3つのむずかしさからどれかを同じ確率で選び、その中から1問出す
+        if (difficulty === 'random') {
+            const keys = Object.keys(DIFFICULTY_RULES);
+            difficulty = keys[Math.floor(Math.random() * keys.length)];
+        }
+        const list = (Make10Engine.subPools[difficulty] && Make10Engine.subPools[difficulty].length > 0)
+            ? Make10Engine.subPools[difficulty]
+            : Make10Engine.pool; // 念のため、空だったら全部の問題から選ぶ
+
+        const p = list[Math.floor(Math.random() * list.length)];
         const shuffled = [...p.nums].sort(() => Math.random() - 0.5);
         return { nums: shuffled, solutions: p.solutions };
     }
@@ -351,7 +431,17 @@ const GameState = {
     isSolved: false,          // 今の問題が解けた直後かどうか
 
     puzzleStartTime: null,    // ★追加: 今の問題を出題した時刻（最速クリアタイムの計算に使う）
-    currentStreak: 0          // ★追加: 今、何問連続で正解しているか（パスすると0に戻る）
+    currentStreak: 0,         // ★追加: 今、何問連続で正解しているか（パスすると0に戻る）
+
+    // ★追加: むずかしさ（'easy' / 'normal' / 'hard'）。前回選んだものを覚えておく
+    difficulty: (() => {
+        const saved = localStorage.getItem('make10_difficulty');
+        return DIFFICULTY_LABELS[saved] ? saved : 'normal';
+    })(),
+    difficultyLocked: false,  // ★追加: タイムアタック中・対戦中は、むずかしさを変えられないようにする
+    puzzleToken: 0,           // ★追加: 問題が切り替わるたびに増やす番号（アニメーション待ちの途中で問題が変わった時の見分け用）
+    isBusy: false,            // ★追加: カードが合体するアニメーション中は、他の操作を受け付けない
+    hintSteps: []             // ★追加: ヒントで表示する「10までの手順」
 };
 
 /**
@@ -365,7 +455,8 @@ const BattleState = {
     currentPlayerIndex: 0,    // 今、何番目のプレイヤーの番か（0から数える）
     currentQuestionIndex: 0,  // 今のプレイヤーが何問目を解いているか（0から数える）
     turnStartTime: null,      // 今のプレイヤーのターンが始まった時刻
-    timerInterval: null       // 経過時間の表示を更新するためのタイマー（setIntervalのID）
+    timerInterval: null,      // 経過時間の表示を更新するためのタイマー（setIntervalのID）
+    playing: false            // ★追加: 今、誰かのターンをプレイ中か
 };
 
 // よく使うHTML要素をあらかじめ変数に入れておく（毎回 document.getElementById() を書かなくて済むように）
@@ -401,6 +492,8 @@ const elFinalBestMessage = document.getElementById('final-best-message');
  */
 window.onload = function () {
     Make10Engine.initPool(); // 問題のストックを先に作っておく
+    updateDifficultyUI();    // ★追加: むずかしさボタンの見た目を、保存されている設定に合わせる
+    setupPWA();              // ★追加: ホーム画面に追加できるようにする準備
     setupEventListeners();
     switchMode('endless');   // 最初はエンドレスモードで始める
     toggleModal('modal-help', true); // ★追加: 開いたら最初に「あそびかた」を表示しておく
@@ -408,9 +501,14 @@ window.onload = function () {
 
 function setupEventListeners() {
     // モード切り替えタブ（エンドレス / タイムアタック / 対戦）
-    document.getElementById('mode-endless').addEventListener('click', () => switchMode('endless'));
-    document.getElementById('mode-time').addEventListener('click', () => switchMode('time'));
-    document.getElementById('mode-battle').addEventListener('click', () => switchMode('battle')); // ★追加
+    // ★変更: タイムアタック・対戦のプレイ中は、すぐに移動せず確認を出す（requestSwitchMode）
+    document.getElementById('mode-endless').addEventListener('click', (e) => requestSwitchMode('endless', e.currentTarget));
+    document.getElementById('mode-time').addEventListener('click', (e) => requestSwitchMode('time', e.currentTarget));
+    document.getElementById('mode-battle').addEventListener('click', (e) => requestSwitchMode('battle', e.currentTarget)); // ★追加
+
+    // ★追加: 「移動の確認」ボタン
+    document.getElementById('btn-leave-cancel').addEventListener('click', cancelLeave);
+    document.getElementById('btn-leave-ok').addEventListener('click', confirmLeave);
 
     // 演算子ボタン（＋ － × ÷）
     document.querySelectorAll('.op-btn').forEach(btn => {
@@ -440,6 +538,12 @@ function setupEventListeners() {
         startNewPuzzle();
     });
     document.getElementById('btn-hint').addEventListener('click', (e) => showHintModal(e.currentTarget));
+    document.getElementById('btn-hint-more').addEventListener('click', showFullHint); // ★追加: ヒントの2段階目（答えを全部見る）
+
+    // ★追加: むずかしさボタン
+    document.querySelectorAll('.difficulty-btn').forEach(btn => {
+        btn.addEventListener('click', () => changeDifficulty(btn.dataset.difficulty));
+    });
 
     // 正解した後の「次の問題へ進む」ボタン
     document.getElementById('btn-next-puzzle').addEventListener('click', () => {
@@ -483,6 +587,10 @@ function setupEventListeners() {
         sound.enabled = !sound.enabled;
         const icon = document.getElementById('sound-icon');
         icon.className = sound.enabled ? "fas fa-volume-up text-lg text-cyan-400" : "fas fa-volume-mute text-lg text-slate-500";
+        // ★追加: 画面を読み上げるソフト向けに、今の状態とボタンの説明も更新する
+        const soundBtn = document.getElementById('sound-toggle-btn');
+        soundBtn.setAttribute('aria-pressed', String(sound.enabled));
+        soundBtn.setAttribute('aria-label', sound.enabled ? '効果音をオフにする' : '効果音をオンにする');
     });
 
     // ★追加: シェアボタン（X / LINE / 画像でシェア）
@@ -519,7 +627,7 @@ function setupBattleEventListeners() {
     // 「対戦開始」ボタン
     document.getElementById('btn-battle-start').addEventListener('click', () => {
         if (BattleState.players.length < 2) {
-            alert('2人以上のニックネームを追加してください');
+            showToast('2人以上のニックネームを追加してください');
             return;
         }
         startBattle();
@@ -545,9 +653,14 @@ function setupBattleEventListeners() {
  */
 function switchMode(newMode) {
     sound.playSelect();
+    bumpPuzzleToken();            // ★追加: 前のモードで待っていたアニメーションなどを無効にする
+    setDifficultyLocked(false);   // ★追加: モードを切り替えたら、むずかしさをまた選べるようにする
     GameState.mode = newMode;
     clearInterval(GameState.timerInterval);   // 前のタイマーが動いていたら止める
     clearInterval(BattleState.timerInterval); // ★追加: 対戦モードの経過時間タイマーも念のため止める
+    GameState.taRunning = false;              // ★追加: プレイ中のフラグも解除する
+    stopCountdown();                          // ★追加: カウントダウン中だった場合は、それも止める
+    BattleState.playing = false;
     GameState.score = 0;
     GameState.currentStreak = 0; // ★追加: モードを切り替えたら連続正解カウントも0から
     elScoreVal.innerText = '0';
@@ -570,7 +683,7 @@ function switchMode(newMode) {
         battle: document.getElementById('mode-battle')
     };
     const activeClass = "mode-tab py-2.5 px-2 rounded-xl font-bold text-xs sm:text-sm flex items-center justify-center gap-1.5 transition-all bg-gradient-to-r from-cyan-500 to-indigo-500 text-white shadow-lg shadow-cyan-500/20";
-    const inactiveClass = "mode-tab py-2.5 px-2 rounded-xl font-bold text-xs sm:text-sm flex items-center justify-center gap-1.5 transition-all text-slate-300 hover:text-white hover:bg-white/5";
+    const inactiveClass = "mode-tab py-2.5 px-2 rounded-xl font-bold text-xs sm:text-sm flex items-center justify-center gap-1.5 transition-all text-slate-300 hover:text-slate-100 hover:bg-white/5";
     Object.keys(tabs).forEach(key => {
         tabs[key].className = (key === newMode) ? activeClass : inactiveClass;
     });
@@ -596,6 +709,7 @@ function switchMode(newMode) {
 
 // 新しい問題を読み込んで盤面をリセットする
 function startNewPuzzle() {
+    bumpPuzzleToken(); // ★追加
     GameState.isSolved = false;
     GameState.currentPuzzle = Make10Engine.getRandomPuzzle();
     GameState.cards = [...GameState.currentPuzzle.nums];
@@ -603,7 +717,7 @@ function startNewPuzzle() {
     GameState.puzzleStartTime = Date.now(); // ★追加: 「今、何時何分何秒か」を記録しておく（クリアタイム計測用）
     resetSelections();
     elNextBanner.classList.add('hidden');
-    renderCards();
+    renderCards({ animate: 'deal' }); // ★変更: 新しい問題のカードは「ポンポンッ」と配られる
 }
 
 
@@ -616,9 +730,22 @@ function startNewPuzzle() {
  * numberEl: カウントダウンの数字を表示するHTML要素
  * onDone:   カウントダウンが0になったときに実行する関数
  */
+// ★追加: 今カウントダウン中かどうかを覚えておく場所
+// （カウントダウン中にモードを移動しようとしたとき、確認を出したり、止めたりするために使う）
+const CountdownState = { timer: null, numberEl: null, onDone: null };
+
+// カウントダウンを止める（数字の表示はそのまま）
+function stopCountdown() {
+    clearInterval(CountdownState.timer);
+    CountdownState.timer = null;
+}
+
 function runCountdown(numberEl, onDone) {
     let count = 3;
     numberEl.innerText = count;
+    stopCountdown(); // 念のため、前のカウントダウンが残っていたら止めておく
+    CountdownState.numberEl = numberEl;
+    CountdownState.onDone = onDone;
 
     // setIntervalで1秒ごとに数字を1つずつ減らしていく
     const countdownTimer = setInterval(() => {
@@ -634,10 +761,12 @@ function runCountdown(numberEl, onDone) {
         } else {
             // 0になったらカウントダウン終了！ 渡された処理を実行する
             clearInterval(countdownTimer);
+            CountdownState.timer = null; // ★追加: カウントダウン終了
             sound.playMerge();
             onDone();
         }
     }, 1000);
+    CountdownState.timer = countdownTimer; // ★追加: 動いているカウントダウンを覚えておく
 }
 
 
@@ -677,11 +806,13 @@ function showTimeAttackStartScreen() {
 // 「スタート」ボタンが押された時に呼ばれる：3→2→1とカウントダウンしてからタイムアタックを始める
 function startTimeAttackCountdown() {
     sound.playSelect();
+    setDifficultyLocked(true); // ★追加: ゲーム中はむずかしさを変えられないようにする
     elTaStartView.classList.add('hidden');
     elTaCountdownView.classList.remove('hidden');
     elTaCountdownView.classList.add('flex');
 
     runCountdown(elTaCountdownNumber, () => {
+        if (GameState.mode !== 'time') return; // ★追加: カウントダウン中に他のモードへ移動していたら、始めない
         // カウントダウン終了！ オーバーレイを消してゲームスタート
         elTaOverlay.classList.add('hidden');
         elTaOverlay.classList.remove('flex');
@@ -695,12 +826,17 @@ function startTimeAttack() {
     elTimerVal.innerText = `${GameState.timeAttackRemaining}s`;
     startNewPuzzle();
 
-    GameState.timerInterval = setInterval(() => {
+    GameState.taRunning = true; // ★追加: タイムアタックのプレイ中
+    // ★変更: 1秒ごとの処理を関数にして取っておく（「移動の確認」で一時停止したあと、再開できるようにするため）
+    GameState.tickTimeAttack = () => {
         GameState.timeAttackRemaining--;
         elTimerVal.innerText = `${GameState.timeAttackRemaining}s`;
 
         if (GameState.timeAttackRemaining <= 0) {
             clearInterval(GameState.timerInterval);
+            GameState.taRunning = false; // ★追加: プレイ終了
+            setDifficultyLocked(false); // ★追加: 終わったら、むずかしさをまた選べるようにする
+            document.getElementById('final-difficulty').innerText = `むずかしさ: ${DIFFICULTY_LABELS[GameState.difficulty]}`; // ★追加: 結果画面にむずかしさを表示
             document.getElementById('final-score').innerText = GameState.score;
             document.getElementById('final-ta-subtitle').innerText = `${formatDuration(GameState.timeAttackDuration)}間チャレンジ終了！`;
 
@@ -717,7 +853,8 @@ function startTimeAttack() {
 
             toggleModal('modal-gameover', true, elTimerBox); // ★追加: タイマー表示の位置から出てくるようにする
         }
-    }, 1000);
+    };
+    GameState.timerInterval = setInterval(GameState.tickTimeAttack, 1000);
 }
 
 
@@ -743,6 +880,7 @@ function hideAllBattleScreens() {
 
 // (1) ニックネーム登録画面を表示する
 function showBattleSetupScreen() {
+    setDifficultyLocked(false); // ★追加: 対戦の準備中は、むずかしさを選べる
     renderBattlePlayersList();
     renderBattleQuestionCountButtons();
     const overlay = document.getElementById('battle-setup-screen');
@@ -757,7 +895,7 @@ function addBattlePlayer() {
     if (name === '') return; // 空っぽなら何もしない
 
     if (BattleState.players.length >= 8) {
-        alert('参加人数は8人までです');
+        showToast('参加人数は8人までです');
         return;
     }
 
@@ -792,8 +930,9 @@ function renderBattlePlayersList() {
         item.innerHTML = `<span class="text-sm font-bold text-slate-200">${idx + 1}. ${escapeHtml(p.name)}</span>`;
 
         const removeBtn = document.createElement('button');
-        removeBtn.className = 'text-slate-500 hover:text-rose-400 px-2';
-        removeBtn.innerHTML = '<i class="fas fa-xmark"></i>';
+        removeBtn.className = 'text-slate-400 hover:text-rose-400 px-2';
+        removeBtn.setAttribute('aria-label', `${p.name}さんを削除`); // ★追加: アイコンだけのボタンなので、読み上げ用の説明を付ける
+        removeBtn.innerHTML = '<i class="fas fa-xmark" aria-hidden="true"></i>';
         removeBtn.addEventListener('click', () => removeBattlePlayer(idx));
 
         item.appendChild(removeBtn);
@@ -814,6 +953,7 @@ function renderBattleQuestionCountButtons() {
 
 // 「対戦開始」ボタンが押された時の処理
 function startBattle() {
+    setDifficultyLocked(true); // ★追加: 全員が同じむずかしさであそべるように、対戦中は変えられなくする
     BattleState.players.forEach(p => p.totalTime = 0); // タイムをリセット（再戦の場合のため）
     BattleState.currentPlayerIndex = 0;
 
@@ -844,6 +984,7 @@ function startBattleCountdown() {
 
     const countdownNumber = document.getElementById('battle-countdown-number');
     runCountdown(countdownNumber, () => {
+        if (GameState.mode !== 'battle') return; // ★追加: 同じ理由で、移動していたら始めない
         const overlay = document.getElementById('battle-turn-start-screen');
         overlay.classList.add('hidden');
         overlay.classList.remove('flex');
@@ -853,6 +994,7 @@ function startBattleCountdown() {
 
 // (3) 実際にそのプレイヤーの問題を出題し始める
 function beginBattleTurn() {
+    BattleState.playing = true; // ★追加: 対戦のプレイ中（移動の確認を出すために使う）
     BattleState.currentQuestionIndex = 0;
     BattleState.turnStartTime = Date.now(); // 今の時刻を「スタート時刻」として覚えておく
 
@@ -869,12 +1011,13 @@ function beginBattleTurn() {
 
 // ★変更: 対戦モード用に、新しい問題をランダムに出題する（プレイヤーごとに問題は変わる。全員共通ではない）
 function loadBattlePuzzle() {
+    bumpPuzzleToken(); // ★追加
     GameState.isSolved = false;
     GameState.currentPuzzle = Make10Engine.getRandomPuzzle();
     GameState.cards = [...GameState.currentPuzzle.nums];
     GameState.history = [];
     resetSelections();
-    renderCards();
+    renderCards({ animate: 'deal' });
     updateBattleHud(); // 「進捗:」「経過時間:」の表示を更新する
 }
 
@@ -904,6 +1047,7 @@ function handleBattlePuzzleCleared() {
     } else {
         // 全部解き終わった！ このプレイヤーの合計タイムを記録する
         clearInterval(BattleState.timerInterval);
+        BattleState.playing = false; // ★追加: このターンのプレイ終了
         const elapsed = (Date.now() - BattleState.turnStartTime) / 1000;
         BattleState.players[BattleState.currentPlayerIndex].totalTime = Math.round(elapsed * 10) / 10;
         showBattleTurnResultScreen();
@@ -945,6 +1089,7 @@ function goToNextBattleTurnOrResults() {
 
 // (5) 全員終わった後の、ランキング画面を表示する
 function showBattleFinalResults() {
+    setDifficultyLocked(false); // ★追加
     // タイムが小さい順（速い順）に並べ替える。元の配列は変えたくないのでコピーしてから並べ替える
     const ranking = [...BattleState.players].sort((a, b) => a.totalTime - b.totalTime);
 
@@ -1002,7 +1147,10 @@ function openStatsModal(originButton) {
 function resetSelections() {
     GameState.selectedCardIdx1 = null;
     GameState.selectedOp = null;
-    document.querySelectorAll('.op-btn').forEach(b => b.classList.remove('selected'));
+    document.querySelectorAll('.op-btn').forEach(b => {
+        b.classList.remove('selected');
+        b.setAttribute('aria-pressed', 'false'); // ★追加
+    });
     updateInstruction();
 }
 
@@ -1023,7 +1171,15 @@ function updateInstruction() {
 }
 
 // 盤面の数字カードを描き直す
-function renderCards() {
+/**
+ * ★変更: アニメーションを指定できるようにした
+ *   options.animate: 'deal'  → 新しい問題を配るときの、順番にポンと出る動き
+ *                    'merge' → 計算でできた新しいカードが「ポンッ」と出る動き
+ *   options.shake:   揺らしたいカードの番号の配列（計算できなかった時に使う）
+ */
+function renderCards(options = {}) {
+    const animate = options.animate || null;
+    const shake = options.shake || [];
     elCardsContainer.innerHTML = '';
     GameState.cards.forEach((val, idx) => {
         const card = document.createElement('button');
@@ -1036,8 +1192,23 @@ function renderCards() {
         card.innerText = displayVal;
 
         // 選択中のカードをハイライトする
-        if (GameState.selectedCardIdx1 === idx) {
+        const isSelected = GameState.selectedCardIdx1 === idx;
+        if (isSelected) {
             card.classList.add('selected');
+        }
+        // ★追加: 読み上げソフト向けに、数字と「選択中かどうか」を伝える
+        card.setAttribute('aria-pressed', String(isSelected));
+        card.setAttribute('aria-label', `数字の${displayVal}${isSelected ? '（選択中）' : ''}`);
+
+        // ★追加: カードのアニメーション
+        if (animate === 'deal') {
+            card.classList.add('card-deal');
+            card.style.setProperty('--i', idx); // 左のカードから順番に出てくるように、番号で遅れ具合を変える
+        } else if (animate === 'merge' && idx === GameState.cards.length - 1) {
+            card.classList.add('card-merge-pop'); // 計算結果の新カードは、いつも一番最後に追加される
+        }
+        if (shake.includes(idx)) {
+            card.classList.add('card-shake');
         }
 
         // 10が完成した時の強調表示
@@ -1053,7 +1224,7 @@ function renderCards() {
 
 // 数字カードをタップした時の処理
 function handleCardClick(idx) {
-    if (GameState.isSolved) return;
+    if (GameState.isSolved || GameState.isBusy) return; // ★変更: 合体アニメーション中も受け付けない
 
     // 1枚目のカードを選ぶ
     if (GameState.selectedCardIdx1 === null) {
@@ -1089,18 +1260,19 @@ function handleCardClick(idx) {
     const op = GameState.selectedOp;
 
     // 0で割り算しようとした場合はエラーメッセージを出す
+    // ★変更: alert()をやめて、画面下のメッセージ + カードを揺らす表示にした（ゲームの流れを止めないため）
     if (op === '/' && Math.abs(val2) < 0.000001) {
-        alert('0で割ることはできません！');
+        showToast('0で割ることはできません！');
         resetSelections();
-        renderCards();
+        renderCards({ shake: [idx1, idx2] });
         return;
     }
 
     // ★追加: 割り切れない（答えが小数になる）割り算をしようとした場合もエラーメッセージを出す
     if (op === '/' && Math.abs(val1 % val2) > 0.000001) {
-        alert('割り切れない計算はできません！');
+        showToast('割り切れない計算はできません！');
         resetSelections();
-        renderCards();
+        renderCards({ shake: [idx1, idx2] });
         return;
     }
 
@@ -1108,30 +1280,44 @@ function handleCardClick(idx) {
     const res = Make10Engine.calc(val1, op, val2);
     if (res === null) return;
 
-    // 「1手戻す」のために、計算前の状態を保存しておく
-    GameState.history.push([...GameState.cards]);
-
-    // 使った2枚のカードを取り除き、計算結果を新しい1枚のカードにする
-    const newCards = [];
-    GameState.cards.forEach((v, i) => {
-        if (i !== idx1 && i !== idx2) {
-            newCards.push(v);
-        }
-    });
-    newCards.push(res);
-    GameState.cards = newCards;
-
     sound.playMerge();
-    resetSelections();
-    renderCards();
 
-    // 残りカードが1枚で、それが10ならクリア判定！
-    checkVictory();
+    // ★追加: 2枚目に選んだカードにも、ほんの一瞬（0.1秒）だけ白い枠を出してから合体させる
+    // 待っている間は isBusy を true にして、他の操作を受け付けないようにする
+    GameState.isBusy = true;
+    const token = GameState.puzzleToken;
+    const secondCardEl = elCardsContainer.children[idx2];
+    if (secondCardEl) secondCardEl.classList.add('card-flash');
+
+    setTimeout(() => {
+        // 待っている間に問題が切り替わっていたら（パスやモード切り替えなど）、何もしない
+        if (token !== GameState.puzzleToken) return;
+        GameState.isBusy = false;
+
+        // 「1手戻す」のために、計算前の状態を保存しておく
+        GameState.history.push([...GameState.cards]);
+
+        // 使った2枚のカードを取り除き、計算結果を新しい1枚のカードにする
+        const newCards = [];
+        GameState.cards.forEach((v, i) => {
+            if (i !== idx1 && i !== idx2) {
+                newCards.push(v);
+            }
+        });
+        newCards.push(res);
+        GameState.cards = newCards;
+
+        resetSelections();
+        renderCards({ animate: 'merge' });
+
+        // 残りカードが1枚で、それが10ならクリア判定！
+        checkVictory();
+    }, 100);
 }
 
 // 演算子ボタンをタップした時の処理
 function handleOpSelect(opVal) {
-    if (GameState.isSolved) return;
+    if (GameState.isSolved || GameState.isBusy) return;
     if (GameState.selectedCardIdx1 === null) return; // 1枚目のカードが未選択なら無効
 
     sound.playOp();
@@ -1143,27 +1329,28 @@ function handleOpSelect(opVal) {
         } else {
             b.classList.remove('selected');
         }
+        b.setAttribute('aria-pressed', String(b.dataset.op === opVal)); // ★追加
     });
     updateInstruction();
 }
 
 // 「1手戻す」機能
 function handleUndo() {
-    if (GameState.history.length === 0 || GameState.isSolved) return;
+    if (GameState.history.length === 0 || GameState.isSolved || GameState.isBusy) return;
     sound.playUndo();
     GameState.cards = GameState.history.pop();
     resetSelections();
-    renderCards();
+    renderCards({ animate: 'deal' });
 }
 
 // ★追加: 「クリア」ボタン ― 1手戻すのではなく、今の問題を出題された時の状態まで一気に戻す
 function handleResetPuzzle() {
-    if (GameState.isSolved) return;
+    if (GameState.isSolved || GameState.isBusy) return;
     sound.playUndo();
     GameState.cards = [...GameState.currentPuzzle.nums]; // 最初に出題された数字に戻す
     GameState.history = []; // 「1手戻す」の記録も空にする
     resetSelections();
-    renderCards();
+    renderCards({ animate: 'deal' });
 }
 
 // クリア判定（数字が「10」1枚になったか調べる）
@@ -1192,26 +1379,298 @@ function checkVictory() {
         // 画面に表示する数字も、こちらの「連続正解数」の方を使うようにする
         GameState.currentStreak++;
         elScoreVal.innerText = GameState.currentStreak;
-        StatsManager.updateBestStreak(GameState.currentStreak);
+        if (GameState.difficulty === 'random') {
+            StatsManager.updateBestStreak(GameState.currentStreak); // ★変更: 連続正解の自己ベストは「ランダム」のときだけ記録する
+        }
 
+        // ★変更: タイムアタックは時間との勝負なので、ボタンを押さなくても自動で次の問題に進む
+        // 緑に光る「10」を0.6秒だけ見せてから、次の問題を出す
+        if (GameState.mode === 'time') {
+            const token = GameState.puzzleToken;
+            setTimeout(() => {
+                // 待っている間にモードが変わった・時間切れになった場合は、何もしない
+                if (token !== GameState.puzzleToken) return;
+                if (GameState.mode !== 'time' || GameState.timeAttackRemaining <= 0) return;
+                startNewPuzzle();
+            }, 600);
+            return;
+        }
+
+        // エンドレスモードは、これまで通り「次の問題へ進む」ボタンを出す
+        const bannerToken = GameState.puzzleToken;
         setTimeout(() => {
+            if (bannerToken !== GameState.puzzleToken) return; // 待っている間にパスやモード切り替えがあったら出さない
             elNextBanner.classList.remove('hidden');
         }, 400);
     }
 }
 
 // ヒントモーダルの表示
+// ★変更: ヒントを2段階にした
+//   1段階目: 「今の状態から、まずやる1手」だけを見せる
+//   2段階目: 「答えを全部見る」ボタンを押したら、10になるまでの手順をすべて見せる
+// 今の盤面(GameState.cards)から手順を計算するので、途中まで進めていても役に立つヒントになる
 function showHintModal(originButton) {
     if (GameState.mode !== 'endless') return; // ★追加: ヒントはエンドレスモード専用の機能にする
     sound.playSelect();
+
     const container = document.getElementById('hint-content');
-    const sols = GameState.currentPuzzle.solutions;
-    if (sols && sols.length > 0) {
-        container.innerText = `${sols[0]} = 10`;
+    const label = document.getElementById('hint-step-label');
+    const moreBtn = document.getElementById('btn-hint-more');
+    container.style.whiteSpace = 'pre-line'; // 手順を複数行で見せるため、改行をそのまま表示する
+
+    const steps = Make10Engine.solveSteps(GameState.cards);
+    GameState.hintSteps = steps || [];
+
+    if (steps === null) {
+        // 今の状態からは10が作れない（途中で行き止まりになった）
+        label.innerText = '';
+        container.innerText = '今の状態からは「10」が作れません。\n「すべて戻す」でやり直してみよう！';
+        moreBtn.classList.add('hidden');
+    } else if (steps.length === 0) {
+        label.innerText = '';
+        container.innerText = 'もう「10」が完成しています！';
+        moreBtn.classList.add('hidden');
+    } else if (steps.length === 1) {
+        // 残り1手なら、最初の1手がそのまま答えになるので、ボタンは出さない
+        label.innerText = 'あと1手で「10」です';
+        container.innerText = Make10Engine.formatStep(steps[0]);
+        moreBtn.classList.add('hidden');
     } else {
-        container.innerText = "ヒントを取得できませんでした";
+        label.innerText = 'まずは次の1手だけ';
+        container.innerText = Make10Engine.formatStep(steps[0]);
+        moreBtn.classList.remove('hidden');
     }
     toggleModal('modal-hint', true, originButton);
+}
+
+// 「答えを全部見る」ボタンが押された時：10になるまでの手順を、全部見せる
+function showFullHint() {
+    if (GameState.hintSteps.length === 0) return;
+    sound.playSelect();
+    const circled = ['①', '②', '③', '④', '⑤'];
+    document.getElementById('hint-step-label').innerText = '答えの手順';
+    document.getElementById('hint-content').innerText = GameState.hintSteps
+        .map((s, i) => `${circled[i] || (i + 1) + '.'} ${Make10Engine.formatStep(s)}`)
+        .join('\n');
+    document.getElementById('btn-hint-more').classList.add('hidden');
+}
+
+/**
+ * ★追加: プレイ中にモードを移動しようとしたときの「確認」
+ * ------------------------------------------------------------
+ * タイムアタックや対戦の最中に、うっかりタブを押すと記録が消えてしまう。
+ * そうならないよう、プレイ中だけ「本当に移動する？」と聞く。
+ * 確認を出している間は、時間が進まないように一時停止しておく。
+ */
+const LeaveState = { targetMode: null, pausedAt: 0, wasCountdown: false };
+
+// 今、タイムアタックか対戦を「プレイ中」かどうか
+function isPlayInProgress() {
+    return (GameState.mode === 'time' && GameState.taRunning) ||
+           (GameState.mode === 'battle' && BattleState.playing) ||
+           CountdownState.timer !== null; // ★追加: 「3・2・1」のカウントダウン中も対象にする
+}
+
+// モードタブを押されたときの入り口。プレイ中でなければ、そのまま切り替える
+function requestSwitchMode(newMode, originButton) {
+    if (!isPlayInProgress()) {
+        switchMode(newMode);
+        return;
+    }
+    sound.playSelect();
+    LeaveState.targetMode = newMode;
+    LeaveState.pausedAt = Date.now();
+
+    // 確認を出している間は、時間を止める
+    LeaveState.wasCountdown = CountdownState.timer !== null;
+    if (LeaveState.wasCountdown) {
+        stopCountdown(); // カウントダウン中なら、カウントダウンを止める
+    } else if (GameState.mode === 'time') {
+        clearInterval(GameState.timerInterval);
+    } else {
+        clearInterval(BattleState.timerInterval);
+    }
+
+    let message;
+    if (LeaveState.wasCountdown) {
+        message = 'スタートのカウントダウン中です。移動すると、カウントダウンは最初からやり直しになります。';
+    } else if (GameState.mode === 'time') {
+        message = 'タイムアタックの途中です。移動すると、今回の記録は消えてしまいます。';
+    } else {
+        message = '対戦の途中です。移動すると、これまでの対戦の記録は消えてしまいます。';
+    }
+    document.getElementById('leave-message').innerText = message;
+    toggleModal('modal-leave', true, originButton);
+}
+
+// 「つづける」: 止めていた時間をまた動かす
+function cancelLeave() {
+    sound.playSelect();
+    toggleModal('modal-leave', false);
+    if (LeaveState.wasCountdown) {
+        // カウントダウンは、3からやり直す
+        runCountdown(CountdownState.numberEl, CountdownState.onDone);
+    } else if (GameState.mode === 'time') {
+        GameState.timerInterval = setInterval(GameState.tickTimeAttack, 1000);
+    } else if (GameState.mode === 'battle') {
+        // 止めていた時間の分だけスタート時刻を後ろにずらして、経過時間が増えないようにする
+        BattleState.turnStartTime += Date.now() - LeaveState.pausedAt;
+        BattleState.timerInterval = setInterval(updateBattleTimerDisplay, 100);
+    }
+    LeaveState.targetMode = null;
+}
+
+// 「移動する」: 確認を閉じて、モードを切り替える
+function confirmLeave() {
+    toggleModal('modal-leave', false);
+    const target = LeaveState.targetMode;
+    LeaveState.targetMode = null;
+    if (target) switchMode(target);
+}
+
+/**
+ * ★追加: ブラウザの別のタブ（や別のアプリ）に切り替えたときの対策
+ * ------------------------------------------------------------
+ * カウントダウン中にページを離れると、離れている間にゲームが始まってしまい、
+ * 戻ってきたときにはもう時間が進んでいる、ということが起きる。
+ * そこで、カウントダウン中にページが見えなくなったら、カウントダウンをやめて
+ * 「スタート」ボタンの画面に戻す（戻ってきたら、自分でスタートし直せる）
+ */
+document.addEventListener('visibilitychange', () => {
+    if (!document.hidden || CountdownState.timer === null) return;
+    stopCountdown();
+    if (GameState.mode === 'time') {
+        showTimeAttackStartScreen();
+    } else if (GameState.mode === 'battle') {
+        showBattleTurnStartScreen();
+    }
+});
+
+/**
+ * ★追加: 画面下に短いメッセージを出す関数（alert()の代わり）
+ * ------------------------------------------------------------
+ * alert() は画面全体が止まって、ゲームの雰囲気もこわれてしまう。
+ * この関数なら、約2秒だけ表示して自動で消えるので、プレイの邪魔にならない。
+ */
+let toastTimer = null;
+function showToast(message, type = 'error') {
+    const el = document.getElementById('toast');
+    el.innerText = message;
+    el.classList.toggle('info', type === 'info'); // 'info' のときは、エラーではない青い枠線にする
+    el.classList.add('show');
+    clearTimeout(toastTimer); // 前のメッセージが残っていたら、消すタイマーをリセットする
+    toastTimer = setTimeout(() => el.classList.remove('show'), 2200);
+}
+
+/**
+ * ★追加: 問題が切り替わったときに呼ぶ関数
+ * 「合体アニメーションの途中でパスされた」ような場合に、古い処理が後から動いてしまわないよう、
+ * 番号(puzzleToken)を進めて、待っていた処理を無効にする
+ */
+function bumpPuzzleToken() {
+    GameState.puzzleToken++;
+    GameState.isBusy = false;
+}
+
+/**
+ * ★追加: むずかしさ（かんたん / ふつう / むずかしい）の切り替え
+ */
+function updateDifficultyUI() {
+    const activeClass = "difficulty-btn px-2 sm:px-4 py-1.5 rounded-lg text-sm font-bold transition-all bg-gradient-to-r from-cyan-500 to-indigo-500 text-white shadow-md";
+    const inactiveClass = "difficulty-btn px-2 sm:px-4 py-1.5 rounded-lg text-sm font-bold transition-all text-slate-300 hover:text-slate-100 hover:bg-white/5";
+    document.querySelectorAll('.difficulty-btn').forEach(btn => {
+        const isActive = btn.dataset.difficulty === GameState.difficulty;
+        btn.className = isActive ? activeClass : inactiveClass;
+        btn.setAttribute('aria-pressed', String(isActive));
+        btn.disabled = GameState.difficultyLocked;
+    });
+}
+
+// ゲーム中は変えられないようにする / また変えられるようにする
+function setDifficultyLocked(locked) {
+    GameState.difficultyLocked = locked;
+    updateDifficultyUI();
+}
+
+function changeDifficulty(level) {
+    if (GameState.difficultyLocked || !DIFFICULTY_LABELS[level]) return;
+    if (GameState.difficulty === level) return; // 同じものを押しただけなら何もしない
+
+    sound.playSelect();
+    GameState.difficulty = level;
+    localStorage.setItem('make10_difficulty', level); // 次回も覚えておく
+    updateDifficultyUI();
+    showToast(`むずかしさ: ${DIFFICULTY_LABELS[level]}`, 'info');
+
+    // エンドレスモードなら、その場で新しいむずかしさの問題に入れ替える
+    // （むずかしさを変えて連続記録をかせげないように、連続正解数は0に戻す）
+    if (GameState.mode === 'endless') {
+        GameState.currentStreak = 0;
+        elScoreVal.innerText = '0';
+        startNewPuzzle();
+    }
+    // タイムアタック・対戦は、スタートした時の問題から新しいむずかしさになる
+}
+
+/**
+ * ★追加: PWA（ホーム画面に追加して、アプリのように使う / オフラインでも遊ぶ）の準備
+ * ------------------------------------------------------------
+ * 必要なものは3つ。
+ *   (1) manifest ... アプリの名前・色・アイコンなどの情報。ファイルを増やさないよう、ここで自動的に作る
+ *   (2) Service Worker (sw.js) ... 一度開いたページを端末に保存しておき、オフラインでも表示する係
+ *   (3) インストールボタン ... 対応しているブラウザ(ChromeやEdgeなど)で、右上に表示する
+ * ※ file:// で直接開いている間は、PWAの仕組みは使えない（https:// か localhost だけで動く）
+ */
+function setupPWA() {
+    if (!/^https?:$/.test(location.protocol)) return;
+
+    // (1) manifest を作って <head> に読み込ませる
+    const dir = location.origin + location.pathname.replace(/[^/]*$/, ''); // このページがあるフォルダのURL
+    const manifest = {
+        name: 'Make 10 - 10を作ろう！',
+        short_name: 'Make 10',
+        description: '数字を合体させて「10」を作るパズルゲーム',
+        lang: 'ja',
+        start_url: location.origin + location.pathname,
+        scope: dir,
+        display: 'standalone',
+        background_color: '#090d16',
+        theme_color: '#090d16',
+        // 新しい画像は作らず、今ある favicon.jpg をアイコンとして使う
+        icons: [
+            { src: dir + 'favicon.jpg', sizes: '192x192', type: 'image/jpeg', purpose: 'any' },
+            { src: dir + 'favicon.jpg', sizes: '512x512', type: 'image/jpeg', purpose: 'any' }
+        ]
+    };
+    const manifestBlob = new Blob([JSON.stringify(manifest)], { type: 'application/manifest+json' });
+    const link = document.createElement('link');
+    link.rel = 'manifest';
+    link.href = URL.createObjectURL(manifestBlob);
+    document.head.appendChild(link);
+
+    // (2) Service Worker を登録する（登録に失敗してもゲーム自体は普通に動く）
+    if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.register('sw.js').catch(() => { /* 何もしない */ });
+    }
+
+    // (3) 「インストール」ボタン
+    const installBtn = document.getElementById('install-btn');
+    let deferredPrompt = null;
+    window.addEventListener('beforeinstallprompt', (e) => {
+        e.preventDefault();          // ブラウザ標準の案内は出さずに、自分のボタンで案内する
+        deferredPrompt = e;
+        installBtn.classList.remove('hidden');
+    });
+    installBtn.addEventListener('click', async () => {
+        if (!deferredPrompt) return;
+        sound.playSelect();
+        deferredPrompt.prompt();
+        try { await deferredPrompt.userChoice; } catch (err) {}
+        deferredPrompt = null;
+        installBtn.classList.add('hidden');
+    });
+    window.addEventListener('appinstalled', () => installBtn.classList.add('hidden'));
 }
 
 // モーダルの開閉を切り替える共通関数
@@ -1429,7 +1888,7 @@ async function drawShareBase(kind, subtitle) {
  */
 async function drawResultImage(score, best, isNew) {
     showShareMessage('result', ''); // 前のメッセージを消す
-    const { ctx, W } = await drawShareBase('result', `タイムアタック ${formatDuration(GameState.timeAttackDuration)}`);
+    const { ctx, W } = await drawShareBase('result', `タイムアタック ${formatDuration(GameState.timeAttackDuration)}・${DIFFICULTY_LABELS[GameState.difficulty]}`);
 
     // 正解数（いちばん大きく）
     ctx.fillStyle = '#f8fafc';
@@ -1469,7 +1928,7 @@ async function drawStatsImage() {
         ['累計正解数', `${StatsManager.getTotalCorrect()}`, '#38bdf8'],
         [`タイムアタック${formatDuration(GameState.timeAttackDuration)}の自己ベスト`, `${StatsManager.getTimeAttackBest()}`, '#6ee7b7'],
         ['最速クリアタイム', fastest !== null ? `${fastest}秒` : '--', '#06b6d4'],
-        ['連続正解記録', `${StatsManager.getBestStreak()}`, '#a5b4fc']
+        ['連続正解記録（ランダム）', `${StatsManager.getBestStreak()}`, '#a5b4fc']
     ];
     items.forEach((item, n) => {
         const cx = n % 2 === 0 ? 340 : 860;   // 左の列 / 右の列
