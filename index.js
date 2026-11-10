@@ -841,15 +841,19 @@ function startTimeAttack() {
             document.getElementById('final-ta-subtitle').innerText = `${formatDuration(GameState.timeAttackDuration)}間チャレンジ終了！`;
 
             // ★追加: 自己ベストを更新したかチェックして、結果画面にメッセージを出す
-            const isNewBest = StatsManager.updateTimeAttackBest(GameState.score);
+            // ★変更: 自己ベストは「ランダム」で遊んだときだけ記録する（むずかしさで難しさが違うため）
+            const isRandom = GameState.difficulty === 'random';
+            const isNewBest = isRandom ? StatsManager.updateTimeAttackBest(GameState.score) : false;
             if (isNewBest && GameState.score > 0) {
                 elFinalBestMessage.innerText = '🎉 自己ベストを更新しました！';
-            } else {
+            } else if (isRandom) {
                 elFinalBestMessage.innerText = `自己ベスト: ${StatsManager.getTimeAttackBest()}問`;
+            } else {
+                elFinalBestMessage.innerText = '自己ベストは、ランダムのときだけ記録されます';
             }
 
-            // ★追加: シェア用の結果画像を作る
-            drawResultImage(GameState.score, StatsManager.getTimeAttackBest(), isNewBest && GameState.score > 0);
+            // ★追加: シェア用の結果画像を作る（ランダム以外のときは、自己ベストの代わりに説明を出す: best に null を渡す）
+            drawResultImage(GameState.score, isRandom ? StatsManager.getTimeAttackBest() : null, isNewBest && GameState.score > 0);
 
             toggleModal('modal-gameover', true, elTimerBox); // ★追加: タイマー表示の位置から出てくるようにする
         }
@@ -1320,6 +1324,19 @@ function handleOpSelect(opVal) {
     if (GameState.isSolved || GameState.isBusy) return;
     if (GameState.selectedCardIdx1 === null) return; // 1枚目のカードが未選択なら無効
 
+    // ★追加: 選ばれている演算子をもう一度押したら、選択を解除する（数字カードと同じ）
+    // 1枚目のカードの選択はそのまま残るので、演算子だけ選び直せる
+    if (GameState.selectedOp === opVal) {
+        sound.playSelect();
+        GameState.selectedOp = null;
+        document.querySelectorAll('.op-btn').forEach(b => {
+            b.classList.remove('selected');
+            b.setAttribute('aria-pressed', 'false');
+        });
+        updateInstruction();
+        return;
+    }
+
     sound.playOp();
     GameState.selectedOp = opVal;
 
@@ -1373,7 +1390,10 @@ function checkVictory() {
 
         // ★追加: この1問にかかった秒数を計算して、最速記録より速ければ保存する
         const elapsedSeconds = (Date.now() - GameState.puzzleStartTime) / 1000;
-        StatsManager.updateFastestTime(Math.round(elapsedSeconds * 10) / 10); // 小数点1桁に丸める
+        // ★変更: 最速記録も「ランダム」のときだけ更新する
+        if (GameState.difficulty === 'random') {
+            StatsManager.updateFastestTime(Math.round(elapsedSeconds * 10) / 10); // 小数点1桁に丸める
+        }
 
         // ★変更: 連続正解記録（コンボ）を1つ増やして、自己ベストより多ければ保存する
         // 画面に表示する数字も、こちらの「連続正解数」の方を使うようにする
@@ -1906,7 +1926,7 @@ async function drawResultImage(score, best, isNew) {
     // 自己ベスト
     ctx.fillStyle = isNew ? '#6ee7b7' : '#94a3b8';
     ctx.font = '800 38px "M PLUS Rounded 1c", sans-serif';
-    ctx.fillText(isNew ? '🎉 自己ベスト更新！' : `自己ベスト ${best}問`, W / 2, 500);
+    ctx.fillText(isNew ? '🎉 自己ベスト更新！' : (best === null ? '自己ベストはランダムのときだけ記録' : `自己ベスト ${best}問`), W / 2, 500);
 
     ctx.fillStyle = '#64748b';
     ctx.font = '500 24px "M PLUS Rounded 1c", sans-serif';
@@ -1926,8 +1946,8 @@ async function drawStatsImage() {
     // [ラベル, 値, 数字の色]
     const items = [
         ['累計正解数', `${StatsManager.getTotalCorrect()}`, '#38bdf8'],
-        [`タイムアタック${formatDuration(GameState.timeAttackDuration)}の自己ベスト`, `${StatsManager.getTimeAttackBest()}`, '#6ee7b7'],
-        ['最速クリアタイム', fastest !== null ? `${fastest}秒` : '--', '#06b6d4'],
+        [`自己ベスト（${formatDuration(GameState.timeAttackDuration)}・ランダム）`, `${StatsManager.getTimeAttackBest()}`, '#6ee7b7'],
+        ['最速クリアタイム（ランダム）', fastest !== null ? `${fastest}秒` : '--', '#06b6d4'],
         ['連続正解記録（ランダム）', `${StatsManager.getBestStreak()}`, '#a5b4fc']
     ];
     items.forEach((item, n) => {
