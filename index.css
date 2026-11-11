@@ -291,3 +291,27 @@ input, textarea {
 @media (min-width: 640px) {
     .num-card { font-size: min(10cqw, 4.2rem); }
 }
+
+
+/* ----- 数字カードのサイズを枚数に関係なく固定する ----- */
+/*
+   4枚並んだときの1枚分の幅を基準にする。
+   flex-1 で残り幅を再配分しないため、3枚・2枚になっても
+   カードの幅と高さが変わらず、下の演算子エリアもずれにくくなる。
+   HTML/JavaScript側の既存クラスはそのままで、この指定を優先する。
+*/
+#cards-container .num-card {
+    flex: 0 0 calc((100cqw - 1.5rem) / 4);
+    width: calc((100cqw - 1.5rem) / 4);
+    min-width: 0;
+    max-width: 8.5rem;
+    box-sizing: border-box;
+}
+
+@media (min-width: 640px) {
+    #cards-container .num-card {
+        flex-basis: calc((100cqw - 3rem) / 4);
+        width: calc((100cqw - 3rem) / 4);
+        max-width: 10rem;
+    }
+}
