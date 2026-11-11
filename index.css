@@ -274,3 +274,20 @@ input, textarea {
 
 /* トーストの種類: 情報（むずかしさを変えた時など）は青い枠線にする */
 #toast.info { border-color: rgba(56, 189, 248, 0.7); }
+
+
+/* ----- ★追加: 数字カードを、使える横幅いっぱいまで大きくする -----
+   .cards-area を「幅の基準(container)」にして、カードの数字の大きさを、その幅(cqw = 幅の1%)から決める。
+   カードは4枚並ぶと1枚が幅の約1/4になるので、数字の大きさは幅の約10%。
+   枚数が減ってカードが大きくなっても、上限（3.6rem / 画面が広いときは4.2rem）より大きくならない */
+.cards-area {
+    container-type: inline-size;
+}
+.num-card {
+    font-size: 1.75rem;                   /* cqw に対応していない古いブラウザ用 */
+    font-size: min(10cqw, 3.6rem);
+    line-height: 1;
+}
+@media (min-width: 640px) {
+    .num-card { font-size: min(10cqw, 4.2rem); }
+}
