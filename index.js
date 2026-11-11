@@ -586,7 +586,7 @@ function setupEventListeners() {
     document.getElementById('sound-toggle-btn').addEventListener('click', () => {
         sound.enabled = !sound.enabled;
         const icon = document.getElementById('sound-icon');
-        icon.className = sound.enabled ? "fas fa-volume-up text-lg text-cyan-400" : "fas fa-volume-mute text-lg text-slate-500";
+        icon.className = sound.enabled ? "fas fa-volume-up text-xl text-cyan-400" : "fas fa-volume-mute text-xl text-slate-500";
         // ★追加: 画面を読み上げるソフト向けに、今の状態とボタンの説明も更新する
         const soundBtn = document.getElementById('sound-toggle-btn');
         soundBtn.setAttribute('aria-pressed', String(sound.enabled));
@@ -682,8 +682,8 @@ function switchMode(newMode) {
         time: document.getElementById('mode-time'),
         battle: document.getElementById('mode-battle')
     };
-    const activeClass = "mode-tab py-2.5 px-2 rounded-xl font-bold text-xs sm:text-sm flex items-center justify-center gap-1.5 transition-all bg-gradient-to-r from-cyan-500 to-indigo-500 text-white shadow-lg shadow-cyan-500/20";
-    const inactiveClass = "mode-tab py-2.5 px-2 rounded-xl font-bold text-xs sm:text-sm flex items-center justify-center gap-1.5 transition-all text-slate-300 hover:text-slate-100 hover:bg-white/5";
+    const activeClass = "mode-tab py-3 px-1 sm:px-2 rounded-xl font-bold text-[0.85rem] sm:text-base flex items-center justify-center gap-1.5 transition-all bg-gradient-to-r from-cyan-500 to-indigo-500 text-white shadow-lg shadow-cyan-500/20";
+    const inactiveClass = "mode-tab py-3 px-1 sm:px-2 rounded-xl font-bold text-[0.85rem] sm:text-base flex items-center justify-center gap-1.5 transition-all text-slate-300 hover:text-slate-100 hover:bg-white/5";
     Object.keys(tabs).forEach(key => {
         tabs[key].className = (key === newMode) ? activeClass : inactiveClass;
     });
@@ -1191,8 +1191,8 @@ function renderCards(options = {}) {
         // 数値の表示形式（小数が出た場合は小数点2桁までにする）
         const displayVal = Number.isInteger(val) ? val : parseFloat(val.toFixed(2));
 
-        // ★変更: 大きさの単位をpx(絶対サイズ)からrem(画面サイズに応じて伸び縮みする単位)に変更した
-        card.className = `num-card min-w-[4.4rem] sm:min-w-[5.3rem] h-[5rem] sm:h-[6.25rem] px-3 bg-gradient-to-br from-slate-800 to-slate-900/90 border border-slate-700/80 text-cyan-300 rounded-2xl text-2xl sm:text-3xl font-black font-outfit flex items-center justify-center cursor-pointer shadow-lg active:scale-95 transition-all`;
+        // ★変更: カードは「横幅いっぱいを均等に分け合う」大きさにした（flex-1）。上限は max-w、高さは aspect で幅に比例させる
+        card.className = `num-card flex-1 basis-0 min-w-0 max-w-[8.5rem] sm:max-w-[10rem] aspect-[17/20] px-1 bg-gradient-to-br from-slate-800 to-slate-900/90 border border-slate-700/80 text-cyan-300 rounded-2xl font-black font-outfit flex items-center justify-center cursor-pointer shadow-lg active:scale-95 transition-all`;
         card.innerText = displayVal;
 
         // 選択中のカードをハイライトする
@@ -1597,8 +1597,8 @@ function bumpPuzzleToken() {
  * ★追加: むずかしさ（かんたん / ふつう / むずかしい）の切り替え
  */
 function updateDifficultyUI() {
-    const activeClass = "difficulty-btn px-2 sm:px-4 py-1.5 rounded-lg text-sm font-bold transition-all bg-gradient-to-r from-cyan-500 to-indigo-500 text-white shadow-md";
-    const inactiveClass = "difficulty-btn px-2 sm:px-4 py-1.5 rounded-lg text-sm font-bold transition-all text-slate-300 hover:text-slate-100 hover:bg-white/5";
+    const activeClass = "difficulty-btn px-2 sm:px-4 py-2 rounded-lg text-sm sm:text-base font-bold transition-all bg-gradient-to-r from-cyan-500 to-indigo-500 text-white shadow-md";
+    const inactiveClass = "difficulty-btn px-2 sm:px-4 py-2 rounded-lg text-sm sm:text-base font-bold transition-all text-slate-300 hover:text-slate-100 hover:bg-white/5";
     document.querySelectorAll('.difficulty-btn').forEach(btn => {
         const isActive = btn.dataset.difficulty === GameState.difficulty;
         btn.className = isActive ? activeClass : inactiveClass;
